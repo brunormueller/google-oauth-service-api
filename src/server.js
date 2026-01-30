@@ -298,6 +298,11 @@ app.get("/internal/google/token", async (req, res) => {
   return res.json({ accessToken: token });
 });
 
+function isGoogleAuthError(err) {
+  const status = err?.response?.status ?? err?.code;
+  return status === 401 || status === 403;
+}
+
 app.get("/auth/drive/list", async (req, res) => {
   const {
     folderId = "root",
@@ -305,36 +310,23 @@ app.get("/auth/drive/list", async (req, res) => {
     sigla,
     env
   } = req.query;
-  console.log("Vim aqui", lojaId, sigla, env)
+  log("Drive list:", lojaId, sigla, env);
   if (!lojaId || !sigla || !env) {
     return res.status(400).json({ error: "Parâmetros obrigatórios ausentes" });
   }
 
-  try {
-    // 1️⃣ Token válido (cache + refresh automático)
+  const runList = async () => {
     const accessToken = await obterAccessTokenValido(lojaId, sigla, env);
-    console.log('Accesss', accessToken)
     if (!accessToken) {
-      return res.status(401).json({ error: "Não autenticado no Google" });
+      return { ok: false, status: 401, error: "Não autenticado no Google" };
     }
-
-    // 2️⃣ Cliente Google
     const auth = new google.auth.OAuth2();
     auth.setCredentials({ access_token: accessToken });
-    console.log('Passou 1')
-
     const drive = google.drive({ version: "v3", auth });
-
-    console.log('Passou 2')
-    // 3️⃣ Query
     const isSharedWithMe = folderId === "sharedWithMe";
-
     const q = isSharedWithMe
       ? "sharedWithMe = true and trashed = false"
       : `'${folderId}' in parents and trashed = false`;
-    console.log('Passou 3')
-
-    // 4️⃣ Chamada Drive
     const result = await drive.files.list({
       q,
       fields:
@@ -343,12 +335,8 @@ app.get("/auth/drive/list", async (req, res) => {
       includeItemsFromAllDrives: true,
       supportsAllDrives: true,
     });
-    console.log('Passou 4', result)
-
-    // 5️⃣ Normalização (atalhos)
     const files = (result.data.files || []).map((f) => {
       const isShortcut = f.mimeType === SHORTCUT_MIME;
-
       return {
         ...f,
         isShortcut,
@@ -358,23 +346,34 @@ app.get("/auth/drive/list", async (req, res) => {
           : f.mimeType,
       };
     });
-    console.log('files', files)
+    const folders = files.filter((f) => f.effectiveMimeType === FOLDER_MIME);
+    const docs = files.filter((f) => f.effectiveMimeType === DOC_MIME);
+    return { ok: true, files: [...folders, ...docs] };
+  };
 
-    const folders = files.filter(
-      (f) => f.effectiveMimeType === FOLDER_MIME
-    );
-    console.log('folders', folders)
-
-    const docs = files.filter(
-      (f) => f.effectiveMimeType === DOC_MIME
-    );
-    console.log('docs', docs)
-
-    return res.json({
-      files: [...folders, ...docs],
-    });
-
+  try {
+    const out = await runList();
+    if (!out.ok) {
+      return res.status(out.status).json({ error: out.error });
+    }
+    return res.json({ files: out.files });
   } catch (err) {
+    const isAuthError = isGoogleAuthError(err);
+    const canRetry = !req._driveListRetried;
+    if (isAuthError && canRetry) {
+      req._driveListRetried = true;
+      const key = getTokenCacheKey(lojaId, sigla, env);
+      tokenCache.delete(key);
+      log(`🔄 Drive rejeitou token para loja ${lojaId} (401/403), invalidando cache e retentando...`);
+      try {
+        const retry = await runList();
+        if (retry.ok) return res.json({ files: retry.files });
+        return res.status(retry.status || 401).json({ error: retry.error || "Não autenticado" });
+      } catch (retryErr) {
+        logError("❌ Erro ao listar Drive (retry)", retryErr);
+        return res.status(500).json({ error: "Erro ao acessar Google Drive" });
+      }
+    }
     logError("❌ Erro ao listar Drive", err);
     return res.status(500).json({ error: "Erro ao acessar Google Drive" });
   }
@@ -382,26 +381,40 @@ app.get("/auth/drive/list", async (req, res) => {
 
 app.get("/auth/status", async (req, res) => {
   const { lojaId, sigla, env } = req.query;
-  console.log('Dados vindo ->', lojaId, sigla, env)
+  log("Dados vindo ->", lojaId, sigla, env);
   if (!lojaId || !sigla || !env) {
     return res.status(400).json({ connected: false, error: "Parâmetros insuficientes" });
   }
 
   try {
-    const tokenValido = await obterAccessTokenValido(lojaId, sigla, env);
+    let tokenValido = await obterAccessTokenValido(lojaId, sigla, env);
 
     if (!tokenValido) {
       return res.json({ connected: false });
     }
 
     // Com o token validado/renovado, pegamos os dados do perfil
-    const userInfoRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+    let userInfoRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
       headers: { Authorization: `Bearer ${tokenValido}` },
     });
-    if (!userInfoRes.ok) return res.json({ connected: false });
+
+    // Se Google retornou 401, token em cache pode estar inválido (revogado/expirado) – invalida e tenta de novo
+    if (!userInfoRes.ok && userInfoRes.status === 401) {
+      const key = getTokenCacheKey(lojaId, sigla, env);
+      tokenCache.delete(key);
+      log(`🔄 Token em cache rejeitado pelo Google (401) para loja ${lojaId}, invalidando cache e tentando refresh...`);
+      tokenValido = await obterAccessTokenValido(lojaId, sigla, env);
+      if (tokenValido) {
+        userInfoRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+          headers: { Authorization: `Bearer ${tokenValido}` },
+        });
+      }
+    }
+
+    if (!userInfoRes?.ok) return res.json({ connected: false });
 
     const userInfo = await userInfoRes.json();
-    console.log('Dados do usuario->', userInfo)
+    log("Dados do usuario ->", userInfo.email);
 
     return res.json({
       connected: true,
@@ -568,8 +581,8 @@ app.post("/auth/refresh-token", async (req, res) => {
 
     // Token revogado ou inválido - usuário precisa fazer login novamente
     if (googleError === "invalid_grant" || googleErrorDesc?.includes("revoked")) {
-      // Limpa o cache se existir
-      tokenCache.delete(String(lojaId));
+      // Limpa o cache se existir (chave correta: env:sigla:lojaId)
+      tokenCache.delete(getTokenCacheKey(lojaId, sigla, env));
       errorResult = {
         error: "Token revogado ou expirado. Necessário novo login.",
         code: "TOKEN_REVOKED",
@@ -599,7 +612,10 @@ app.post("/auth/refresh-token", async (req, res) => {
 app.post("/auth/logout", async (req, res) => {
   const { lojaId, sigla, env } = req.body;
 
-  tokenCache.delete(String(lojaId));
+  // Chave do cache é env:sigla:lojaId, não apenas lojaId
+  if (lojaId != null && sigla && env) {
+    tokenCache.delete(getTokenCacheKey(lojaId, sigla, env));
+  }
   await removerTokensNoBanco(lojaId, sigla, env);
 
   res.json({ ok: true });
