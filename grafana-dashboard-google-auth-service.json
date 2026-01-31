@@ -1,0 +1,216 @@
+{
+  "id": null,
+  "uid": null,
+  "title": "Google Auth Service",
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 2,
+  "refresh": "10s",
+  "tags": [
+    "google-auth-service",
+    "prometheus"
+  ],
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Token Refresh (total)",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "sum(google_token_refresh_total)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Refresh Errors (total)",
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "sum(google_token_refresh_error_total)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Lojas conectadas (últimos 30s)",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "count(time() - google_store_last_seen_timestamp_seconds < 30)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Lojas com token válido (cache agora)",
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "count(google_token_expires_at_timestamp_seconds > time())",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Cache Hit Ratio (%)",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "100 * sum(google_token_cache_hit_total) / (sum(google_token_cache_hit_total) + sum(google_token_cache_miss_total))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Google OAuth Refresh Duration (p95)",
+      "gridPos": {
+        "x": 6,
+        "y": 4,
+        "w": 9,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(google_request_duration_seconds_bucket{endpoint=\"oauth_refresh\"}[5m]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Cache Hits vs Misses",
+      "gridPos": {
+        "x": 15,
+        "y": 4,
+        "w": 9,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "rate(google_token_cache_hit_total[5m])",
+          "legendFormat": "hit",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(google_token_cache_miss_total[5m])",
+          "legendFormat": "miss",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Lojas conectadas agora (últimos 30s)",
+      "gridPos": {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "(time() - google_store_last_seen_timestamp_seconds) < 30",
+          "instant": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Lojas com token válido agora",
+      "gridPos": {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "google_token_expires_at_timestamp_seconds > time()",
+          "instant": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Top erros de refresh por loja (15m)",
+      "gridPos": {
+        "x": 0,
+        "y": 18,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "expr": "topk(10, sum by (env, sigla, lojaId, reason) (increase(google_token_refresh_error_total[15m])))",
+          "legendFormat": "{{env}}/{{sigla}}/{{lojaId}} ({{reason}})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Node Memory (RSS)",
+      "gridPos": {
+        "x": 12,
+        "y": 18,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "expr": "process_resident_memory_bytes",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Uptime (seconds)",
+      "gridPos": {
+        "x": 0,
+        "y": 25,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "process_uptime_seconds",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}
